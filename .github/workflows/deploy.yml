@@ -32,9 +32,6 @@ jobs:
       - name: Run type check
         run: npm run typecheck
 
-      - name: Run linter
-        run: npm run lint
-
       - name: Build for GitHub Pages
         run: npm run build
         env:

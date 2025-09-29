@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Browser VAD Demo</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .status {
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+            font-weight: bold;
+        }
+
+        .status.idle {
+            background-color: #e3f2fd;
+            color: #1976d2;
+        }
+
+        .status.listening {
+            background-color: #fff3e0;
+            color: #f57c00;
+        }
+
+        .status.speaking {
+            background-color: #e8f5e8;
+            color: #388e3c;
+        }
+
+        .controls {
+            margin: 20px 0;
+        }
+
+        button {
+            background-color: #1976d2;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+            font-size: 16px;
+        }
+
+        button:hover {
+            background-color: #1565c0;
+        }
+
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+
+        .probability-bar {
+            width: 100%;
+            height: 20px;
+            background-color: #e0e0e0;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+
+        .probability-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4caf50, #ff9800, #f44336);
+            transition: width 0.1s ease;
+            width: 0%;
+        }
+
+        .events-log {
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 10px;
+            background-color: #fafafa;
+            font-family: monospace;
+            font-size: 14px;
+        }
+
+        .event-entry {
+            margin: 5px 0;
+            padding: 5px;
+            border-radius: 3px;
+        }
+
+        .event-speech-start {
+            background-color: #e8f5e8;
+            color: #2e7d32;
+        }
+
+        .event-speech-stop {
+            background-color: #ffebee;
+            color: #c62828;
+        }
+
+        .event-speech-data {
+            background-color: #e3f2fd;
+            color: #1565c0;
+        }
+
+        .config-panel {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #fafafa;
+        }
+
+        .config-panel label {
+            display: block;
+            margin: 10px 0 5px 0;
+            font-weight: bold;
+        }
+
+        .config-panel input {
+            width: 100px;
+            padding: 5px;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎤 Browser VAD Demo</h1>
+        <p>Voice Activity Detection using Silero VAD and ONNX Runtime Web</p>
+
+        <div class="status idle" id="status">
+            Status: Idle - Click "Start VAD" to begin
+        </div>
+
+        <div class="controls">
+            <button id="startBtn">Start VAD</button>
+            <button id="stopBtn" disabled>Stop VAD</button>
+            <button id="resetBtn" disabled>Reset</button>
+        </div>
+
+        <div>
+            <label>Speech Probability:</label>
+            <div class="probability-bar">
+                <div class="probability-fill" id="probabilityFill"></div>
+            </div>
+            <span id="probabilityText">0%</span>
+        </div>
+
+        <div class="config-panel">
+            <h3>Configuration</h3>
+            <label>Threshold: <input type="number" id="threshold" value="0.5" min="0" max="1" step="0.1"></label>
+            <label>Min Speech Duration (ms): <input type="number" id="minSpeechDuration" value="250" min="0" step="50"></label>
+            <label>Min Silence Duration (ms): <input type="number" id="minSilenceDuration" value="250" min="0" step="50"></label>
+        </div>
+
+        <div>
+            <h3>Events Log</h3>
+            <div class="events-log" id="eventsLog">
+                <div class="event-entry">Ready - Configure settings and click "Start VAD"</div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import BrowserVAD from './src/index.ts';
+
+        class VADDemo {
+            constructor() {
+                this.vad = null;
+                this.isRunning = false;
+                this.audioStream = null;
+
+                this.initializeElements();
+                this.setupEventListeners();
+            }
+
+            initializeElements() {
+                this.elements = {
+                    status: document.getElementById('status'),
+                    startBtn: document.getElementById('startBtn'),
+                    stopBtn: document.getElementById('stopBtn'),
+                    resetBtn: document.getElementById('resetBtn'),
+                    probabilityFill: document.getElementById('probabilityFill'),
+                    probabilityText: document.getElementById('probabilityText'),
+                    eventsLog: document.getElementById('eventsLog'),
+                    threshold: document.getElementById('threshold'),
+                    minSpeechDuration: document.getElementById('minSpeechDuration'),
+                    minSilenceDuration: document.getElementById('minSilenceDuration')
+                };
+            }
+
+            setupEventListeners() {
+                this.elements.startBtn.addEventListener('click', () => this.startVAD());
+                this.elements.stopBtn.addEventListener('click', () => this.stopVAD());
+                this.elements.resetBtn.addEventListener('click', () => this.resetVAD());
+            }
+
+            async startVAD() {
+                try {
+                    this.updateStatus('Initializing...', 'listening');
+                    this.logEvent('Initializing VAD...');
+
+                    // Get microphone access
+                    this.audioStream = await navigator.mediaDevices.getUserMedia({
+                        audio: {
+                            sampleRate: 16000,
+                            channelCount: 1,
+                            echoCancellation: true,
+                            noiseSuppression: true
+                        }
+                    });
+
+                    // Create VAD instance with config
+                    const config = this.getConfig();
+                    this.vad = await BrowserVAD.create(config);
+
+                    // Setup event listeners
+                    this.setupVADEventListeners();
+
+                    // Attach audio stream
+                    await this.vad.attachAudioStream(this.audioStream);
+
+                    this.isRunning = true;
+                    this.updateButtonStates();
+                    this.updateStatus('Listening for speech...', 'listening');
+                    this.logEvent('VAD started successfully');
+
+                } catch (error) {
+                    this.logEvent(`Error starting VAD: ${error.message}`, 'error');
+                    this.updateStatus('Error starting VAD', 'idle');
+                    console.error('VAD start error:', error);
+                }
+            }
+
+            async stopVAD() {
+                try {
+                    if (this.vad) {
+                        this.vad.detachAudioStream();
+                    }
+
+                    if (this.audioStream) {
+                        this.audioStream.getTracks().forEach(track => track.stop());
+                        this.audioStream = null;
+                    }
+
+                    this.isRunning = false;
+                    this.updateButtonStates();
+                    this.updateStatus('Stopped', 'idle');
+                    this.updateProbability(0);
+                    this.logEvent('VAD stopped');
+
+                } catch (error) {
+                    this.logEvent(`Error stopping VAD: ${error.message}`, 'error');
+                    console.error('VAD stop error:', error);
+                }
+            }
+
+            async resetVAD() {
+                try {
+                    if (this.vad) {
+                        await this.vad.reset();
+                        this.logEvent('VAD reset');
+                    }
+                } catch (error) {
+                    this.logEvent(`Error resetting VAD: ${error.message}`, 'error');
+                    console.error('VAD reset error:', error);
+                }
+            }
+
+            setupVADEventListeners() {
+                this.vad.addEventListener('speech_start', (event) => {
+                    this.updateStatus('🗣️ Speech detected!', 'speaking');
+                    this.logEvent(`Speech started - Probability: ${(event.detail.probability * 100).toFixed(1)}%`, 'speech-start');
+                });
+
+                this.vad.addEventListener('speech_stop', (event) => {
+                    this.updateStatus('Listening for speech...', 'listening');
+                    this.logEvent(`Speech stopped - Probability: ${(event.detail.probability * 100).toFixed(1)}%`, 'speech-stop');
+                });
+
+                this.vad.addEventListener('speech_data', (event) => {
+                    this.logEvent(`Speech data chunk - ${event.detail.data.length} samples`, 'speech-data');
+                });
+            }
+
+            getConfig() {
+                return {
+                    threshold: parseFloat(this.elements.threshold.value),
+                    minSpeechDuration: parseInt(this.elements.minSpeechDuration.value),
+                    minSilenceDuration: parseInt(this.elements.minSilenceDuration.value)
+                };
+            }
+
+            updateStatus(message, type) {
+                this.elements.status.textContent = `Status: ${message}`;
+                this.elements.status.className = `status ${type}`;
+            }
+
+            updateButtonStates() {
+                this.elements.startBtn.disabled = this.isRunning;
+                this.elements.stopBtn.disabled = !this.isRunning;
+                this.elements.resetBtn.disabled = !this.isRunning;
+            }
+
+            updateProbability(probability) {
+                const percentage = (probability * 100).toFixed(1);
+                this.elements.probabilityFill.style.width = `${percentage}%`;
+                this.elements.probabilityText.textContent = `${percentage}%`;
+            }
+
+            logEvent(message, type = '') {
+                const timestamp = new Date().toLocaleTimeString();
+                const entry = document.createElement('div');
+                entry.className = `event-entry ${type ? `event-${type}` : ''}`;
+                entry.textContent = `[${timestamp}] ${message}`;
+
+                this.elements.eventsLog.appendChild(entry);
+                this.elements.eventsLog.scrollTop = this.elements.eventsLog.scrollHeight;
+
+                // Limit log entries
+                const entries = this.elements.eventsLog.children;
+                if (entries.length > 100) {
+                    this.elements.eventsLog.removeChild(entries[0]);
+                }
+            }
+        }
+
+        // Initialize demo when page loads
+        window.addEventListener('load', () => {
+            new VADDemo();
+        });
+    </script>
+</body>
+</html>
